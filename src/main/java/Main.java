@@ -17,6 +17,7 @@ import java.util.*;
 public class Main {
 
   public static void main(String[] args) throws IOException {
+
     String command = args[0];
     switch (command) {
       case "decode" -> Bittorrent.decode(args[1]);
@@ -28,5 +29,6 @@ public class Main {
       case null, default -> System.out.println("Unknown command: " + command);
     }
   }
+
 }
 
