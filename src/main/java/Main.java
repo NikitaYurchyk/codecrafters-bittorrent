@@ -26,33 +26,22 @@ public class Main {
       case "download_piece" -> {
         String fileName = args[3];
         String downloadDir = args[2];
-        int index = Integer.parseInt(args[4]);
+        int pieceIndex = Integer.parseInt(args[4]);
 
         Bittorrent.info(fileName);
         Bittorrent.peers(fileName);
 
         byte[] bytes = Files.readAllBytes(Paths.get(fileName));
 
+        int blockSize = 16 * 1024;
+        int pieceLength = Bittorrent.getLenOfSinglePieces();
+        int numBlocks = (int) Math.ceil((double) pieceLength / blockSize);
+
         Bencode bencode = new Bencode(true);
         Map<String, Object> f = bencode.decode(bytes, Type.DICTIONARY);
         Map<String, Object> info = (Map<String, Object>) f.get("info");
 
         var infoHash = Hasher.sha1InArrayOfBytes(bencode.encode(info));
-        Object rawTotalLen = info.get("length");
-        Object rawLen = info.get("piece length");
-        int currTotal = 0;
-
-
-        int lenPiece = 0;
-        if (rawLen instanceof Long) {
-          lenPiece = ((Long) rawLen).intValue();
-        }
-        int totalLen = 0;
-        if (rawTotalLen instanceof Long) {
-          totalLen = ((Long) rawTotalLen).intValue();
-        }
-
-        ArrayList<byte[]> allPieces = new ArrayList<>();
 
         for (var i : Bittorrent.getPeers()) {
           try {
@@ -121,38 +110,54 @@ public class Main {
                   throw new Exception("Peer did not unchoke.");
                 }
               }
-              int offset = 0;
-              int numOfPieces = (int) Math.ceil((double) Bittorrent.getTotalLenOfAllPieces() / Bittorrent.getLenOfSinglePieces());
-              System.out.println(numOfPieces + " " + Bittorrent.getTotalLenOfAllPieces() + " " + Bittorrent.getLenOfSinglePieces());
-              for(int j = 0; j < numOfPieces; j++){
-                Bittorrent.makeRequest(out, j, offset);
-                int blockSize = Math.min(Bittorrent.getLenOfSinglePieces(), Bittorrent.getTotalLenOfAllPieces() - offset);
-//                Map.Entry<Integer, byte[]> offsetAndPiece = Bittorrent.recvBlockMsg(in, blockSize);
 
+              // Request all blocks for this piece
+              byte[] fullPiece = new byte[pieceLength];
 
-
-
-              }
-              //900000
-
-
-
-              System.out.println();
-
-
-
-
-              byte[] piece = new byte[lenPiece];
-
-
-              currTotal += piece.length;
-
-              if (totalLen - currTotal < lenPiece) {
-                lenPiece = totalLen - currTotal;
+              for (int blockIndex = 0; blockIndex < numBlocks; blockIndex++) {
+                int begin = blockIndex * blockSize;
+                int length = Math.min(blockSize, pieceLength - begin);
+                Bittorrent.makeRequest(out, pieceIndex, begin, length);
               }
 
-              allPieces.add(piece);
-              index++;
+              // Receive all blocks
+              for (int blockIndex = 0; blockIndex < numBlocks; blockIndex++) {
+                // Read message length
+                byte[] lengthBytes = new byte[4];
+                in.readNBytes(lengthBytes, 0, 4);
+                int messageLength = ByteBuffer.wrap(lengthBytes).order(ByteOrder.BIG_ENDIAN).getInt();
+
+                // Read full message (handle partial reads)
+                byte[] message = new byte[messageLength];
+                int totalRead = 0;
+                while (totalRead < messageLength) {
+                  int bytesRead = in.read(message, totalRead, messageLength - totalRead);
+                  if (bytesRead == -1) break;
+                  totalRead += bytesRead;
+                }
+
+                // Parse: [1 byte id][4 bytes index][4 bytes begin][data]
+                byte messageId = message[0];
+                int receivedIndex = ByteBuffer.wrap(message, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                int receivedBegin = ByteBuffer.wrap(message, 5, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+
+                // Copy block into the full piece
+                int blockDataLength = messageLength - 9;
+                System.arraycopy(message, 9, fullPiece, receivedBegin, blockDataLength);
+              }
+
+              // Verify hash
+              byte[] pieceHash = Hasher.sha1InArrayOfBytes(fullPiece);
+              String actualHash = HexFormat.of().formatHex(pieceHash);
+              String expectedHash = Bittorrent.getPiecesHashes().get(pieceIndex);
+
+              if (!actualHash.equals(expectedHash)) {
+                throw new Exception("Hash mismatch! Expected: " + expectedHash + ", Got: " + actualHash);
+              }
+
+              // Save to disk
+              Files.write(Paths.get(downloadDir), fullPiece);
+              System.out.println("Piece " + pieceIndex + " downloaded to " + downloadDir);
 
             } else {
               throw new Exception("Fuck");

@@ -24,6 +24,7 @@ public class Bittorrent {
     static private ArrayList<String> piecesHashes = new ArrayList<>();
     static private ArrayList<String> listOfPeers = new ArrayList<>();
 
+
     static public int getLenOfSinglePieces(){
         return lenOfSinglePiece;
     }
@@ -63,6 +64,7 @@ public class Bittorrent {
                 index++;
             }
             String hex = HexFormat.of().formatHex(tmpBytes);
+
             piecesHashes.add(hex);
             System.out.println(Decoder.gson.toJson(hex));
         }
@@ -236,45 +238,18 @@ public class Bittorrent {
         }
     }
 
-    public static void makeRequest(OutputStream out, int index, int offset) throws IOException {
-        // len + req number + beg + offset + payload
+    public static void makeRequest(OutputStream out, int index, int offset, int
+            length) throws IOException {
         ByteBuffer req = ByteBuffer.allocate(4 + 1 + 4 + 4 + 4);
-        req.putInt(13);
-        req.put((byte) 6);
+        req.order(ByteOrder.BIG_ENDIAN);
+        req.putInt(13); // message length
+        req.put((byte) 6); // request id
         req.putInt(index);
         req.putInt(offset);
-        req.putInt(Math.min(16384, Bittorrent.getLenOfSinglePieces() - offset));
+        req.putInt(length);
         out.write(req.array());
         out.flush();
     }
-    // int receive len first
-    // 1 byte msg id which 7
-    // int index piece index
-    // int offset withing the piece
-    // int dataBlock
-//    public static Map.Entry<Integer, byte[]> recvBlockMsg(InputStream in, int blockSize) throws IOException {
-//        int bytesDownloaded = 0;
-//
-//
-//        byte[] lengthBuffer = new byte[4];
-//        int bytesRead = in.read(lengthBuffer);
-//        int messageLength = ByteBuffer.wrap(lengthBuffer).getInt();
-//        System.out.println(messageLength);
-//        byte[] messagePart = new byte[messageLength];
-//        int bytesReadInMessagePart = in.readNBytes(messagePart, 0, messageLength);
-//        byte msgType = messagePart[0];
-//        System.out.println("Msg type: " + msgType);
-//
-//        byte[] indexBuffer = Arrays.copyOfRange(messagePart, 1, 5);
-//        int indexFromMsg = ByteBuffer.wrap(indexBuffer).getInt();
-//        System.out.println("Index number of block " + indexFromMsg);
-//
-//        byte[] beginBuffer = Arrays.copyOfRange(messagePart, 5, 9);
-//        int offsetInMsg = ByteBuffer.wrap(beginBuffer).getInt();
-//        System.out.println("Offset in the block " + offsetInMsg);
-//
-//        return bytesDownloaded;
-//    }
 
 
 }
