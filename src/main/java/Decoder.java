@@ -27,8 +27,8 @@ public class Decoder {
             if(bencodedString.charAt(0) == 'i') {
                 Bencode bencode = new Bencode();
                 Long number = bencode.decode(bencodedString.getBytes(), Type.NUMBER);
-//                return gson.toJson(number);
-                return number.toString();
+                return gson.toJson(number);
+//                return number.toString();
             }
             if(bencodedString.charAt(0) == 'l') {
                 Bencode bencode = new Bencode();

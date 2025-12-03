@@ -218,8 +218,6 @@ public class Bittorrent {
 
 
             System.out.println("Info Hash: "+ Hasher.strToSHA1(bencode.encode(info)));
-            System.out.println("Piece Hashes: ");
-
             var pieces = info.get("pieces");
             Object rawLen = info.get("piece length");
             if(rawLen instanceof Long){
