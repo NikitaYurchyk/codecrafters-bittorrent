@@ -33,18 +33,33 @@ public class Main {
 
         byte[] bytes = Files.readAllBytes(Paths.get(fileName));
 
-        int blockSize = 16 * 1024;
-        int pieceLength = Bittorrent.getLenOfSinglePieces();
-        int numBlocks = (int) Math.ceil((double) pieceLength / blockSize);
-
         Bencode bencode = new Bencode(true);
         Map<String, Object> f = bencode.decode(bytes, Type.DICTIONARY);
         Map<String, Object> info = (Map<String, Object>) f.get("info");
 
         var infoHash = Hasher.sha1InArrayOfBytes(bencode.encode(info));
 
+        int blockSize = 16 * 1024;
+        int standardPieceLength = Bittorrent.getLenOfSinglePieces();
+        int totalFileLength = Bittorrent.getTotalLenOfAllPieces();
+
+        // Calculate actual piece length (last piece might be smaller)
+        int pieceLength;
+        int pieceOffset = pieceIndex * standardPieceLength;
+        if (pieceOffset + standardPieceLength > totalFileLength) {
+          pieceLength = totalFileLength - pieceOffset;
+          System.out.println("Last piece detected, actual length: " + pieceLength);
+        } else {
+          pieceLength = standardPieceLength;
+        }
+
+        int numBlocks = (int) Math.ceil((double) pieceLength / blockSize);
+
+        boolean pieceDownloaded = false;
         for (var i : Bittorrent.getPeers()) {
+          if (pieceDownloaded) break;
           try {
+            System.out.println("Trying peer: " + i);
             byte[] randomId = new byte[20];
 
             Random random = new Random();
@@ -111,42 +126,45 @@ public class Main {
                 }
               }
 
-              // Request all blocks for this piece
               byte[] fullPiece = new byte[pieceLength];
 
               for (int blockIndex = 0; blockIndex < numBlocks; blockIndex++) {
                 int begin = blockIndex * blockSize;
                 int length = Math.min(blockSize, pieceLength - begin);
                 Bittorrent.makeRequest(out, pieceIndex, begin, length);
-              }
 
-              // Receive all blocks
-              for (int blockIndex = 0; blockIndex < numBlocks; blockIndex++) {
-                // Read message length
                 byte[] lengthBytes = new byte[4];
-                in.readNBytes(lengthBytes, 0, 4);
+                int lengthBytesRead = 0;
+                while (lengthBytesRead < 4) {
+                  int bytesRead = in.read(lengthBytes, lengthBytesRead, 4 - lengthBytesRead);
+                  if (bytesRead == -1) {
+                    throw new Exception("Connection closed while reading message length");
+                  }
+                  lengthBytesRead += bytesRead;
+                }
                 int messageLength = ByteBuffer.wrap(lengthBytes).order(ByteOrder.BIG_ENDIAN).getInt();
 
-                // Read full message (handle partial reads)
                 byte[] message = new byte[messageLength];
                 int totalRead = 0;
                 while (totalRead < messageLength) {
                   int bytesRead = in.read(message, totalRead, messageLength - totalRead);
-                  if (bytesRead == -1) break;
+                  if (bytesRead == -1) {
+                    throw new Exception("Connection closed while reading message body");
+                  }
                   totalRead += bytesRead;
                 }
 
-                // Parse: [1 byte id][4 bytes index][4 bytes begin][data]
                 byte messageId = message[0];
-                int receivedIndex = ByteBuffer.wrap(message, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (messageId != 7) {
+                  throw new Exception("Expected piece message (7), got: " + messageId);
+                }
                 int receivedBegin = ByteBuffer.wrap(message, 5, 4).order(ByteOrder.BIG_ENDIAN).getInt();
 
-                // Copy block into the full piece
                 int blockDataLength = messageLength - 9;
                 System.arraycopy(message, 9, fullPiece, receivedBegin, blockDataLength);
+                System.out.println("Received block " + blockIndex + " (begin=" + receivedBegin + ", length=" + blockDataLength + ")");
               }
 
-              // Verify hash
               byte[] pieceHash = Hasher.sha1InArrayOfBytes(fullPiece);
               String actualHash = HexFormat.of().formatHex(pieceHash);
               String expectedHash = Bittorrent.getPiecesHashes().get(pieceIndex);
@@ -155,19 +173,22 @@ public class Main {
                 throw new Exception("Hash mismatch! Expected: " + expectedHash + ", Got: " + actualHash);
               }
 
-              // Save to disk
               Files.write(Paths.get(downloadDir), fullPiece);
               System.out.println("Piece " + pieceIndex + " downloaded to " + downloadDir);
+              pieceDownloaded = true;
 
             } else {
-              throw new Exception("Fuck");
+              throw new Exception("No bitfield received from peer");
             }
 
             socket.close();
-            break;
           } catch (Exception e) {
-            throw new RuntimeException(e);
+            System.err.println("Failed to download from peer " + i + ": " + e.getMessage());
           }
+        }
+
+        if (!pieceDownloaded) {
+          throw new RuntimeException("Failed to download piece from any peer");
         }
 
       }
