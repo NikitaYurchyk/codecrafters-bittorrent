@@ -224,7 +224,7 @@ public class Bittorrent {
                 lenOfSinglePiece = ((Long) rawLen).intValue();
             }
             byte[] piecesInByte = ((ByteBuffer) pieces).array();
-            System.out.println("Piece Length: " + totalLenOfAllPieces);
+            System.out.println("Piece Length: " + lenOfSinglePiece);
             System.out.println("Piece Hashes: ");
             printPieces(piecesInByte);
 
