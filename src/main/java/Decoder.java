@@ -20,13 +20,15 @@ public class Decoder {
                 }
             }
             int length = Integer.parseInt(bencodedString.substring(0, firstColonIndex));
-            return bencodedString.substring(firstColonIndex+1, firstColonIndex+1+length);
+            String str = bencodedString.substring(firstColonIndex + 1, firstColonIndex + 1 + length);
+            return gson.toJson(str);
         }
         if (Character.isLetter(bencodedString.charAt(0))){
             if(bencodedString.charAt(0) == 'i') {
                 Bencode bencode = new Bencode();
                 Long number = bencode.decode(bencodedString.getBytes(), Type.NUMBER);
-                return gson.toJson(number);
+//                return gson.toJson(number);
+                return number.toString();
             }
             if(bencodedString.charAt(0) == 'l') {
                 Bencode bencode = new Bencode();
