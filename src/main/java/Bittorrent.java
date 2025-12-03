@@ -38,7 +38,7 @@ public class Bittorrent {
         ArrayList<String> res = new ArrayList<>();
         Integer u = 0xFF;
         for(int i = 0; i < peers.limit(); i += 6){
-            Integer p1 = peers.get(i) & u;
+            Integer p1 = peers.get(i)     & u;
             Integer p2 = peers.get(i + 1) & u;
             Integer p3 = peers.get(i + 2) & u;
             Integer p4 = peers.get(i + 3) & u;
@@ -55,11 +55,11 @@ public class Bittorrent {
 
     }
     private static void printPieces(byte[] pieces){
-        for(int i = 0; i < pieces.length/20; i++){
-            int numIterations = i * 20;
-            byte[] tmpBytes = new byte[20];
+        for(int i = 0; i < pieces.length / BittorrentConstants.INFO_HASH_SIZE; i++){
+            int numIterations = i * BittorrentConstants.INFO_HASH_SIZE;
+            byte[] tmpBytes = new byte[BittorrentConstants.INFO_HASH_SIZE];
             int index = 0;
-            for(int j = numIterations; j < numIterations + 20; j++){
+            for(int j = numIterations; j < numIterations + BittorrentConstants.INFO_HASH_SIZE; j++){
                 tmpBytes[index] = pieces[j];
                 index++;
             }
@@ -134,31 +134,21 @@ public class Bittorrent {
 
     public static void handshake(String fileName, String rawIpAndPort){
         try {
-            byte[] bytes = Files.readAllBytes(Paths.get(fileName));
-            Bencode bencode = new Bencode(true);
-            Map<String, Object> f = bencode.decode(bytes, Type.DICTIONARY);
-            Map<String, Object> info = (Map<String, Object>) f.get("info");
-            var infoHash = Hasher.sha1InArrayOfBytes(bencode.encode(info));
+            TorrentMetadata metadata = TorrentMetadata.fromFile(fileName);
 
-            byte[] randomId = new byte[20];
-
-            Random random = new Random();
-            random.nextBytes(randomId);
-            byte lenOfProtocol = 19;
-            Integer numBytes = 1 + 19 + 8 + 20 + 20;
+            byte[] randomId = new byte[BittorrentConstants.PEER_ID_SIZE];
+            new Random().nextBytes(randomId);
 
             var indexOfDots = rawIpAndPort.indexOf(':');
             var ip = rawIpAndPort.substring(0, indexOfDots);
-
-            String rawPort = rawIpAndPort.substring(indexOfDots + 1, rawIpAndPort.length());
+            String rawPort = rawIpAndPort.substring(indexOfDots + 1);
             var actualPort = Integer.parseInt(rawPort);
 
-            ByteBuffer handshake = ByteBuffer.allocate(numBytes);
-
-            handshake.put(lenOfProtocol);
-            handshake.put("BitTorrent protocol".getBytes(StandardCharsets.UTF_8));
-            handshake.put(new byte[8]);
-            handshake.put(infoHash);
+            ByteBuffer handshake = ByteBuffer.allocate(BittorrentConstants.HANDSHAKE_SIZE);
+            handshake.put((byte) BittorrentConstants.PROTOCOL_LENGTH);
+            handshake.put(BittorrentConstants.PROTOCOL_NAME.getBytes(StandardCharsets.UTF_8));
+            handshake.put(new byte[BittorrentConstants.RESERVED_BYTES_SIZE]);
+            handshake.put(metadata.getInfoHash());
             handshake.put(randomId);
 
             Socket socket = new Socket(ip, actualPort);
@@ -167,14 +157,13 @@ public class Bittorrent {
             out.write(handshake.array());
             out.flush();
 
-            byte[] resp = new byte[1024];
-            int nBytes = in.read(resp);
+            byte[] resp = new byte[BittorrentConstants.BUFFER_SIZE];
+            int bytesRead = in.read(resp);
 
-            if(nBytes != -1) {
-                byte[] readBytes = Arrays.copyOf(resp, nBytes);
+            if(bytesRead != -1) {
+                byte[] readBytes = Arrays.copyOf(resp, bytesRead);
                 System.out.println("result of handshake");
-                byte[] hashTmp = Arrays.copyOfRange(readBytes, 1 + 19 + 8, 48);
-                byte[] tmp = Arrays.copyOfRange(readBytes, 1 + 19 + 8 + 20, 68);
+                byte[] tmp = Arrays.copyOfRange(readBytes, 48, BittorrentConstants.HANDSHAKE_SIZE);
                 var peerId = HexFormat.of().formatHex(tmp);
                 System.out.println("Peer ID: " + peerId);
             }else{
@@ -238,18 +227,154 @@ public class Bittorrent {
         }
     }
 
-    public static void makeRequest(OutputStream out, int index, int offset, int
-            length) throws IOException {
-        ByteBuffer req = ByteBuffer.allocate(4 + 1 + 4 + 4 + 4);
-        req.order(ByteOrder.BIG_ENDIAN);
-        req.putInt(13); // message length
-        req.put((byte) 6); // request id
-        req.putInt(index);
-        req.putInt(offset);
-        req.putInt(length);
-        out.write(req.array());
-        out.flush();
+    private static byte[] downloadSinglePiece(PeerConnection peer, TorrentMetadata metadata,
+                                              int pieceIndex) throws IOException {
+        int pieceLength = metadata.getPieceLength(pieceIndex);
+        int numBlocks = (int) Math.ceil((double) pieceLength / BittorrentConstants.BLOCK_SIZE);
+        byte[] fullPiece = new byte[pieceLength];
+
+        for (int blockIndex = 0; blockIndex < numBlocks; blockIndex++) {
+            int begin = blockIndex * BittorrentConstants.BLOCK_SIZE;
+            int length = Math.min(BittorrentConstants.BLOCK_SIZE, pieceLength - begin);
+
+            byte[] blockData = peer.requestBlock(pieceIndex, begin, length);
+            System.arraycopy(blockData, 0, fullPiece, begin, blockData.length);
+        }
+
+        String actualHash = HexFormat.of().formatHex(Hasher.sha1InArrayOfBytes(fullPiece));
+        String expectedHash = metadata.getPieceHash(pieceIndex);
+        if (!actualHash.equals(expectedHash)) {
+            throw new IOException("Hash mismatch for piece " + pieceIndex);
+        }
+
+        return fullPiece;
     }
 
+    private static List<String> parsePeerAddresses(ByteBuffer peers) {
+        List<String> addresses = new ArrayList<>();
+        int mask = 0xFF;
 
+        for (int i = 0; i < peers.limit(); i += 6) {
+            int p1 = peers.get(i) & mask;
+            int p2 = peers.get(i + 1) & mask;
+            int p3 = peers.get(i + 2) & mask;
+            int p4 = peers.get(i + 3) & mask;
+
+            ByteBuffer portBuffer = ByteBuffer.wrap(new byte[]{peers.get(i + 4), peers.get(i + 5)});
+            int port = portBuffer.order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+
+            addresses.add(p1 + "." + p2 + "." + p3 + "." + p4 + ":" + port);
+        }
+
+        return addresses;
+    }
+
+    private static byte[] assembleFile(byte[][] pieces) {
+        int totalBytes = 0;
+        for (byte[] piece : pieces) {
+            totalBytes += piece.length;
+        }
+
+        byte[] file = new byte[totalBytes];
+        int offset = 0;
+        for (byte[] piece : pieces) {
+            System.arraycopy(piece, 0, file, offset, piece.length);
+            offset += piece.length;
+        }
+
+        return file;
+    }
+
+    public static void download(String outputPath, String fileName) throws IOException {
+        TorrentMetadata metadata = TorrentMetadata.fromFile(fileName);
+
+        Bittorrent.info(fileName);
+        Bittorrent.peers(fileName);
+
+        List<String> peerList = new ArrayList<>(listOfPeers);
+
+        int totalPieces = metadata.getTotalPieces();
+        byte[][] allPieces = new byte[totalPieces][];
+        boolean[] downloaded = new boolean[totalPieces];
+        int piecesDownloaded = 0;
+
+        System.out.println("Downloading " + totalPieces + " pieces...");
+
+        for (String peerAddress : peerList) {
+            if (piecesDownloaded == totalPieces) break;
+
+            try (PeerConnection peer = new PeerConnection(peerAddress, metadata.getInfoHash())) {
+                System.out.println("Connecting to peer: " + peerAddress);
+
+                peer.connect();
+                peer.performHandshake();
+                peer.waitForBitfield();
+                peer.sendInterested();
+                peer.waitForUnchoke();
+
+                for (int pieceIndex = 0; pieceIndex < totalPieces; pieceIndex++) {
+                    if (downloaded[pieceIndex]) continue;
+
+                    try {
+                        byte[] pieceData = downloadSinglePiece(peer, metadata, pieceIndex);
+                        allPieces[pieceIndex] = pieceData;
+                        downloaded[pieceIndex] = true;
+                        piecesDownloaded++;
+                        System.out.println("Downloaded piece " + pieceIndex +
+                                " (" + piecesDownloaded + "/" + totalPieces + ")");
+                    } catch (IOException e) {
+                        System.err.println("Failed piece " + pieceIndex + ": " + e.getMessage());
+                        break;
+                    }
+                }
+            } catch (IOException e) {
+                System.err.println("Failed peer " + peerAddress + ": " + e.getMessage());
+            }
+        }
+
+        if (piecesDownloaded < totalPieces) {
+            throw new IOException("Downloaded only " + piecesDownloaded + "/" + totalPieces + " pieces");
+        }
+
+        byte[] completeFile = assembleFile(allPieces);
+        Files.write(Paths.get(outputPath), completeFile);
+        System.out.println("Downloaded " + outputPath);
+    }
+
+    public static void downloadPiece(String[] args) throws IOException {
+        String downloadDir = args[2];
+        String fileName = args[3];
+        int pieceIndex = Integer.parseInt(args[4]);
+
+        TorrentMetadata metadata = TorrentMetadata.fromFile(fileName);
+
+        Bittorrent.info(fileName);
+        Bittorrent.peers(fileName);
+
+        List<String> peerList = new ArrayList<>(listOfPeers);
+
+        for (String peerAddress : peerList) {
+            try (PeerConnection peer = new PeerConnection(peerAddress, metadata.getInfoHash())) {
+                System.out.println("Trying peer: " + peerAddress);
+
+                peer.connect();
+                peer.performHandshake();
+                System.out.println("Peer ID: " + peer.getPeerId());
+                peer.waitForBitfield();
+                peer.sendInterested();
+                peer.waitForUnchoke();
+
+                byte[] pieceData = downloadSinglePiece(peer, metadata, pieceIndex);
+
+                Files.write(Paths.get(downloadDir), pieceData);
+                System.out.println("Piece " + pieceIndex + " downloaded to " + downloadDir);
+                return;
+
+            } catch (IOException e) {
+                System.err.println("Failed to download from peer " + peerAddress + ": " + e.getMessage());
+            }
+        }
+
+        throw new IOException("Failed to download piece from any peer");
+    }
 }
